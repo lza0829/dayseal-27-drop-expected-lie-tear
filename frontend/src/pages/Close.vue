@@ -5,6 +5,7 @@ import { api } from '../api'
 const preview = ref(null)
 const declared = ref(0)
 const batches = ref([])
+const consistency = ref(null)
 const msg = ref('')
 const err = ref('')
 
@@ -12,6 +13,8 @@ async function load() {
   preview.value = await api.closePreview()
   declared.value = preview.value.expected_cash
   batches.value = await api.batches()
+  try { consistency.value = await api.consistency(preview.value.business_day) }
+  catch { consistency.value = null }
 }
 
 async function seal() {
@@ -70,6 +73,11 @@ function precheckView(p) {
   </div>
   <p v-if="msg" class="msg">{{ msg }}</p>
   <p v-if="err" class="msg err">{{ err }}</p>
+  <p v-if="consistency && consistency.sealed && !consistency.consistent" class="msg err">
+    封账批次钉扎值与解款事件不一致：期待 {{ consistency.pinned.expected_cash.toFixed(2) }}
+    ≠ 实时 {{ consistency.live.expected_cash.toFixed(2) }}（解款 {{ consistency.pinned.pickup_count }} /
+    {{ consistency.live.pickup_count }} 笔）。须显式作废批次或回滚事件。
+  </p>
   <div class="panel">
     <h2>封账批次</h2>
     <table>

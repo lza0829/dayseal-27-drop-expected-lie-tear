@@ -23,7 +23,8 @@ def day_total(conn: sqlite3.Connection, business_day: str) -> tuple[float, int]:
 
 
 def next_line_no(conn: sqlite3.Connection) -> str:
-    n = conn.execute("SELECT COUNT(*) c FROM cash_lines").fetchone()["c"] + 1
+    row = conn.execute("SELECT MAX(id) m FROM cash_lines").fetchone()
+    n = int(row["m"] or 0) + 1
     return f"CL-{n:04d}"
 
 

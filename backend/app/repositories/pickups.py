@@ -26,7 +26,8 @@ def day_pickup_total(conn: sqlite3.Connection, business_day: str) -> tuple[float
 
 
 def next_pickup_no(conn: sqlite3.Connection) -> str:
-    n = conn.execute("SELECT COUNT(*) c FROM cash_pickups").fetchone()["c"] + 1
+    row = conn.execute("SELECT MAX(id) m FROM cash_pickups").fetchone()
+    n = int(row["m"] or 0) + 1
     return f"PK-{n:04d}"
 
 

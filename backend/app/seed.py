@@ -70,6 +70,56 @@ CREATE TABLE IF NOT EXISTS reopen_requests (
 );
 '''
 
+# Created after `_migrate`: the migration backfills pinned metrics on legacy
+# batches (which may already be sealed), so the freeze must not exist yet.
+TRIGGERS = '''
+-- A sealed business day freezes its pinned metrics: supplementary pickup
+-- events cannot be back-filled or rolled back behind the seal, whatever code
+-- path reaches the table.
+CREATE TRIGGER IF NOT EXISTS trg_cash_pickups_sealed_insert
+BEFORE INSERT ON cash_pickups
+WHEN EXISTS (
+  SELECT 1 FROM close_batches
+  WHERE close_batches.business_day = NEW.business_day AND close_batches.status = 'sealed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'business day is sealed: pickup events are frozen');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_cash_pickups_sealed_delete
+BEFORE DELETE ON cash_pickups
+WHEN EXISTS (
+  SELECT 1 FROM close_batches
+  WHERE close_batches.business_day = OLD.business_day AND close_batches.status = 'sealed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'business day is sealed: pickup events are frozen');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_cash_pickups_sealed_update
+BEFORE UPDATE ON cash_pickups
+WHEN EXISTS (
+  SELECT 1 FROM close_batches
+  WHERE close_batches.business_day IN (OLD.business_day, NEW.business_day)
+    AND close_batches.status = 'sealed'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'business day is sealed: pickup events are frozen');
+END;
+
+-- Pinned batch metrics of a sealed batch are frozen too; only a status change
+-- (void / supersede) may follow, and a void is an explicit audited action.
+CREATE TRIGGER IF NOT EXISTS trg_close_batches_sealed_metrics
+BEFORE UPDATE OF
+  business_day, cash_total, pickup_count, pickup_total,
+  expected_cash, system_total, declared_cash, variance
+ON close_batches
+WHEN OLD.status = 'sealed'
+BEGIN
+  SELECT RAISE(ABORT, 'sealed close batch: pinned metrics are frozen');
+END;
+'''
+
 
 def _migrate(conn) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(close_batches)").fetchall()}
@@ -98,6 +148,7 @@ def seed_if_empty() -> None:
     try:
         conn.executescript(SCHEMA)
         _migrate(conn)
+        conn.executescript(TRIGGERS)
         n = conn.execute("SELECT COUNT(*) c FROM tills").fetchone()["c"]
         if n:
             return

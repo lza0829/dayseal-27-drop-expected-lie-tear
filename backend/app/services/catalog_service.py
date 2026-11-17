@@ -56,8 +56,26 @@ def dashboard_extended() -> dict:
         conn.close()
 
 def dashboard_fenced() -> dict:
-    raw = dashboard()
-    return fence_mod.overlay_counts(raw)
+    from app.services import close_service
+
+    conn = connect()
+    try:
+        raw = dashboard()
+        day = raw.get("business_day") or ""
+        pending = close_repo.fence_pending_count(conn, day)
+        sealed = bool(raw.get("sealed_today"))
+    finally:
+        conn.close()
+
+    out = fence_mod.overlay_counts(raw, open_variance_count=pending, sealed=sealed)
+    if day:
+        consistency = close_service.pinned_consistency(day)
+        out["sealed_consistent"] = consistency.get("consistent", True)
+        if not out["sealed_consistent"]:
+            # Pinned metrics drifted from the live event scan: block sealing
+            # until the batch is voided or the event rolled back explicitly.
+            out["seal_allowed"] = False
+    return out
 
 
 def fence_snapshot() -> dict:
@@ -66,6 +84,7 @@ def fence_snapshot() -> dict:
         "pending_fence": d.get("pending_fence"),
         "seal_allowed": d.get("seal_allowed"),
         "open_variance_count": d.get("open_variance_count"),
+        "sealed_consistent": d.get("sealed_consistent"),
         "business_day": d.get("business_day"),
     }
 

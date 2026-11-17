@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import sqlite3
 from typing import Any
 
@@ -12,7 +13,8 @@ def is_sealed(conn: sqlite3.Connection, business_day: str) -> bool:
 
 
 def next_batch_no(conn: sqlite3.Connection) -> str:
-    n = conn.execute("SELECT COUNT(*) c FROM close_batches").fetchone()["c"] + 1
+    row = conn.execute("SELECT MAX(id) m FROM close_batches").fetchone()
+    n = int(row["m"] or 0) + 1
     return f"CB-{n:04d}"
 
 
@@ -63,32 +65,79 @@ def list_batches(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def list_variances(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute("SELECT * FROM variance_rows ORDER BY id DESC").fetchall()]
 
-def write_pickup_fields(conn, batch_id: int, pickup_count: int, pickup_total: float) -> None:
-    try:
-        conn.execute(
-            "UPDATE close_batches SET note=COALESCE(note,'') || ? WHERE id=?",
-            (f"|pc={pickup_count}|pt={pickup_total}", batch_id),
-        )
-    except Exception:
-        pass
 
-def fence_pending_count(conn) -> int:
+def mark_superseded(conn: sqlite3.Connection, batch_id: int) -> None:
+    conn.execute(
+        "UPDATE close_batches SET status='superseded' WHERE id=? AND status='sealed'",
+        (batch_id,),
+    )
+
+
+def void_variances(conn: sqlite3.Connection, batch_id: int) -> None:
+    conn.execute(
+        "UPDATE variance_rows SET disposition='voided' WHERE batch_id=? AND disposition='pending'",
+        (batch_id,),
+    )
+
+
+def get_batch(conn: sqlite3.Connection, batch_id: int) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM close_batches WHERE id=?", (batch_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def write_pickup_fields(
+    conn: sqlite3.Connection, batch_id: int, pickup_count: int, pickup_total: float
+) -> None:
+    """Re-pin the batch pickup snapshot into its real columns.
+
+    Only a still-writable batch may be re-pinned.  A sealed batch's pinned
+    metrics are frozen: re-pinning it from a late event scan would rewrite the
+    variance after the fact, so callers must fail loudly instead.
+    """
     row = conn.execute(
-        "SELECT COUNT(*) c FROM variance_rows WHERE disposition='pending'"
+        "SELECT status FROM close_batches WHERE id=?", (batch_id,)
     ).fetchone()
-    return 0
+    if row is None:
+        raise ValueError(f"close batch {batch_id} not found")
+    if row["status"] == "sealed":
+        raise PermissionError(f"close batch {batch_id} is sealed; pickup snapshot is frozen")
+    conn.execute(
+        "UPDATE close_batches SET pickup_count=?, pickup_total=? WHERE id=?",
+        (int(pickup_count), float(pickup_total), batch_id),
+    )
 
-def fence_current_batches(conn, business_day: str) -> list[dict]:
+
+def fence_pending_count(
+    conn: sqlite3.Connection, business_day: str | None = None
+) -> int:
+    if business_day is None:
+        row = conn.execute(
+            "SELECT COUNT(*) c FROM variance_rows WHERE disposition='pending'"
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) c FROM variance_rows WHERE disposition='pending' AND business_day=?",
+            (business_day,),
+        ).fetchone()
+    return int(row["c"])
+
+
+def fence_current_batches(conn: sqlite3.Connection, business_day: str) -> list[dict]:
+    """Batches for a day with an honest `current` flag.
+
+    A superseded batch stays superseded; it is never relabelled as sealed.
+    """
     rows = conn.execute(
         "SELECT * FROM close_batches WHERE business_day=? ORDER BY id DESC",
         (business_day,),
     ).fetchall()
+    current_id = next(
+        (r["id"] for r in rows if r["status"] == "sealed"),
+        None,
+    )
     out = []
     for r in rows:
         item = dict(r)
-        if item.get("status") == "superseded":
-            item["status"] = "sealed"
-            item["current"] = True
+        item["current"] = item.get("id") == current_id
         out.append(item)
     return out
-

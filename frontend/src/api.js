@@ -27,6 +27,8 @@ export const api = {
   seal: (body) => req('/api/close/seal', { method: 'POST', body: JSON.stringify(body) }),
   batches: () => req('/api/close/batches'),
   variances: () => req('/api/close/variances'),
+  consistency: (day) => req('/api/close/consistency' + (day ? `?business_day=${encodeURIComponent(day)}` : '')),
+  precheck: (day) => req('/api/close/precheck' + (day ? `?business_day=${encodeURIComponent(day)}` : '')),
   getDay: () => req('/api/settings/business-day'),
   setDay: (business_day) => req('/api/settings/business-day', { method: 'PUT', body: JSON.stringify({ business_day }) }),
 }
